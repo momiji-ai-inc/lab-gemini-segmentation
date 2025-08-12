@@ -1,123 +1,165 @@
-import os, io, json, base64
-from dataclasses import dataclass
+import os, io, json, base64, argparse
+from dotenv import load_dotenv
 from typing import List, Tuple
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# Google GenAI SDK
+from models import SegMask
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
+
 load_dotenv()
 
-# ==== 設定 ====
-MODEL = "gemini-2.5-flash"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    print("GEMINI_API_KEY environment variable is not set. Please set it in .env or your environment.")
-    raise SystemExit("GEMINI_API_KEY not set")
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-PROMPT_TEMPLATE = """
-Give the segmentation masks for the objects described below.
+DEFAULT_MODEL = "gemini-2.5-flash"
+PROMPT_TEMPLATE = """Give the segmentation masks for {desc} in the image.
 Output a JSON list where each item has:
-- "box_2d": [y0, x0, y1, x1] normalized to 0–1000
-- "mask": base64 PNG (probability map 0–255) cropped to the box
+- "box_2d": [y0, x0, y1, x1] normalized to 0-1000
+- "mask": base64 PNG (probability map 0-255) cropped to the box
 - "label": a descriptive text label
+Use descriptive labels."""
 
-Query: "{query}"
-"""
+def _as_abs_box(box_2d, W, H) -> Tuple[int, int, int, int]:
+    y0, x0, y1, x1 = box_2d
+    ay0 = int(np.floor(y0 / 1000.0 * H))
+    ax0 = int(np.floor(x0 / 1000.0 * W))
+    ay1 = int(np.ceil (y1 / 1000.0 * H))
+    ax1 = int(np.ceil (x1 / 1000.0 * W))
+    return ay0, ax0, ay1, ax1
 
-@dataclass
-class SegItem:
-    label: str
-    box: Tuple[int, int, int, int]  # (y0, x0, y1, x1) absolute px
-    mask_img: Image.Image           # PIL Image (L) resized to box size
+def _decode_mask_to_L(mask_b64_png: str) -> Image.Image:
+    if mask_b64_png.startswith("data:image/png;base64,"):
+        mask_b64_png = mask_b64_png.split(",", 1)[1]
+    buf = io.BytesIO(base64.b64decode(mask_b64_png))
+    return Image.open(buf).convert("L")
 
-def _parse_codefence_json(s: str) -> str:
-    """Docsやブログのコードフェンス付きJSONを想定して除去。"""
-    if "```json" in s:
-        s = s.split("```json", 1)[1]
-        s = s.split("```", 1)[0]
-    return s
-
-def segment(image_path: str, query: str, output_dir: str = "outputs") -> List[SegItem]:
-    # 画像を読み込み＆長辺1024にサムネイル（推奨）
-    im = Image.open(image_path).convert("RGB")
-    im.thumbnail([1024, 1024], Image.Resampling.LANCZOS)
-    W, H = im.size
-
-    # thinking を無効化
-    config = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-        response_mime_type="application/json"
-    )
-
-    prompt = PROMPT_TEMPLATE.format(query=query).strip()
-
-    # SDKはPillow画像をそのまま渡せる
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=[prompt, im],
-        config=config,
-    )
-
-    # JSON取り出し
-    raw = _parse_codefence_json(resp.text)
-    items = json.loads(raw)
-
-    os.makedirs(output_dir, exist_ok=True)
-    results: List[SegItem] = []
-
-    # 各マスクを復元して重ね合わせ画像も保存
-    overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    for i, it in enumerate(items):
-        label = it.get("label", f"item_{i}")
-        y0, x0, y1, x1 = it["box_2d"]
-        # 正規化(0–1000)→絶対px
-        ay0 = int(y0 / 1000 * H); ax0 = int(x0 / 1000 * W)
-        ay1 = int(y1 / 1000 * H); ax1 = int(x1 / 1000 * W)
-        if ay0 >= ay1 or ax0 >= ax1:  # 異常ボックスはスキップ
+def parse_segmentation_masks(items: List[dict], img_size: Tuple[int,int]) -> List[SegMask]:
+    W, H = img_size
+    out: List[SegMask] = []
+    for idx, it in enumerate(items):
+        if not isinstance(it, dict) or "box_2d" not in it or "mask" not in it:
+            continue
+        ay0, ax0, ay1, ax1 = _as_abs_box(it["box_2d"], W, H)
+        if not (0 <= ax0 < ax1 <= W and 0 <= ay0 < ay1 <= H):
             continue
 
-        # マスクPNG（"data:image/png;base64,..."）
-        b64 = it["mask"]
-        if b64.startswith("data:image/png;base64,"):
-            b64 = b64.split(",", 1)[1]
-        mask = Image.open(io.BytesIO(base64.b64decode(b64))).convert("L")
-        # 箱サイズにリサイズ
-        mask = mask.resize((ax1 - ax0, ay1 - ay0), Image.Resampling.BILINEAR)
+        # 箱サイズにマスクをリサイズ → フルサイズキャンバスへ合成
+        m = _decode_mask_to_L(it["mask"]).resize((ax1-ax0, ay1-ay0), Image.Resampling.BICUBIC)
+        full = Image.new("L", (W, H), color=0)
+        full.paste(m, (ax0, ay0))
+        label = (it.get("label") or f"item_{idx}").strip()
+        out.append(SegMask(ay0, ax0, ay1, ax1, label, full))
+    return out
 
-        # 合成（127閾値で2値化）
-        arr = np.array(mask)
-        yy, xx = np.where(arr > 127)
-        for (yyi, xxi) in zip(yy, xx):
-            draw.point((ax0 + xxi, ay0 + yyi), fill=(255, 0, 0, 100))
+def overlay_mask_on_img(img_rgb: Image.Image, mask_L: Image.Image, color=(255,0,0), alpha=0.5) -> Image.Image:
+    """mask_L>127 の画素へ color を alpha で重畳"""
+    if img_rgb.mode != "RGBA":
+        base = img_rgb.convert("RGBA")
+    else:
+        base = img_rgb.copy()
 
-        # 個別保存
-        mask.save(os.path.join(output_dir, f"{i:02d}_{label}_mask.png"))
-        results.append(SegItem(label=label, box=(ay0, ax0, ay1, ax1), mask_img=mask))
+    # 2値化してアルファに使う（0..255）
+    bin_mask = mask_L.point(lambda v: 255 if v > 127 else 0).convert("L")
+    color_img = Image.new("RGBA", img_rgb.size, color + (0,))
+    # 指定 alpha を掛けたアルファチャンネル
+    a = (np.array(bin_mask, dtype=np.uint16) * int(alpha*255) // 255).astype(np.uint8)
+    overlay = Image.merge("RGBA", (
+        Image.new("L", img_rgb.size, color[0]),
+        Image.new("L", img_rgb.size, color[1]),
+        Image.new("L", img_rgb.size, color[2]),
+        Image.fromarray(a),
+    ))
+    return Image.alpha_composite(base, overlay)
 
-    # 元画像にオーバーレイを重ねた合成画像
-    composite = Image.alpha_composite(im.convert("RGBA"), overlay)
-    out_path = os.path.join(output_dir, "overlay.png")
-    composite.save(out_path)
-    print(f"Saved overlay to {out_path}")
+def draw_boxes_and_labels(img: Image.Image, masks: List[SegMask]) -> Image.Image:
+    img = img.convert("RGBA")
+    draw = ImageDraw.Draw(img)
+    colors = [
+        (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255),
+        (255,165,0),(0,128,0),(128,0,128),(128,128,0),(0,128,128),(128,0,0),
+    ]
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=max(16, img.height//25))
+    except:
+        font = ImageFont.load_default()
 
-    # 検出結果の簡易ログ
-    for r in results:
-        print(f"- {r.label}: box(y0,x0,y1,x1)={r.box}")
+    for i, m in enumerate(masks):
+        color = colors[i % len(colors)]
+        draw.rectangle([m.x0, m.y0, m.x1, m.y1], outline=color, width=3)
+        # ラベル（白縁取り）
+        text = m.label
+        tx, ty = m.x0+4, max(12, m.y0-4)
+        stroke = 1
+        draw.text((tx, ty), text, font=font, fill=color, stroke_fill=(0,0,0), stroke_width=stroke)
+    return img
 
-    return results
+def generate_overlay_image(image_path: str, json_masks: List[dict], mask_alpha=0.5) -> Image.Image:
+    # 入力画像
+    base = Image.open(image_path).convert("RGB")
+    W, H = base.size
+    segs = parse_segmentation_masks(json_masks, (W, H))
+    # 先にすべてのマスクを重畳
+    composited = base.copy()
+    palette = [
+        (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255),
+        (255,165,0),(0,128,0),(128,0,128),(128,128,0),(0,128,128),(128,0,0),
+    ]
+    for i, s in enumerate(segs):
+        color = palette[i % len(palette)]
+        composited = overlay_mask_on_img(composited, s.full_mask_L, color=color, alpha=mask_alpha)
+    # 枠とラベルを描画
+    composited = draw_boxes_and_labels(composited, segs)
+    return composited
+
+def call_gemini(image_path: str, desc: str, model: str, api_key: str) -> List[dict]:
+    client = genai.Client(api_key=api_key)
+    im = Image.open(image_path).convert("RGB")
+
+    cfg = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        response_mime_type="application/json",
+    )
+    prompt = PROMPT_TEMPLATE.format(desc=(desc or "all clearly visible objects"))
+    resp = client.models.generate_content(
+        model=model,
+        contents=[im, prompt],
+        config=cfg,
+    )
+    # レスポンスはJSON文字列（``json フェンス対応）
+    text = resp.text or ""
+    if "```" in text:
+        # ```json ... ``` の場合
+        text = text.split("```", 1)[1]
+        text = text.split("```", 1)[0]
+        if text.lstrip().startswith("json"):
+            text = text.split("\n", 1)[1] if "\n" in text else ""
+    return json.loads(text)
+
+def main():
+    load_dotenv()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--image", required=True)
+    ap.add_argument("--query", default="all clearly visible objects")
+    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--out", default="overlay.png")
+    ap.add_argument("--alpha", type=float, default=0.5)
+    args = ap.parse_args()
+
+    print("== start: call_gemini")
+    masks = call_gemini(args.image, args.query, args.model, GEMINI_API_KEY)
+    from datetime import datetime
+    print("== end: call_gemini, start: save json")
+    os.makedirs("outputs", exist_ok=True)
+    json_path = f"outputs/{datetime.now().strftime('%Y%m%d')}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(masks, f, ensure_ascii=False, indent=2)
+    print(f"Saved API result: {json_path}")
+    print("== start: generate_overlay_image")
+    out_img = generate_overlay_image(args.image, masks, mask_alpha=args.alpha)
+    print("== end: generate_overlay_image, start: save")
+    out_img.save(args.out)
+    print(f"Saved: {args.out}")
+    print("== end: all")
 
 if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--image", required=True, help="Path to input image")
-    p.add_argument("--query", required=True, help='e.g. "the people who are not sitting"')
-    p.add_argument("--out", default="outputs")
-    args = p.parse_args()
-
-    segment(args.image, args.query, args.out)
+    main()
