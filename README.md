@@ -8,8 +8,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 画像の保存
-`/images`に解析対象の画像を配置
+### その他準備
+- `/images`に解析対象の画像を配置
+- `.env`を作成して、API KEYをセット
 
 ## 実行方法
 - image: 画像パス str
