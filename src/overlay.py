@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from typing import List, Tuple
@@ -25,17 +26,13 @@ def overlay_mask_on_img(img_rgb: Image.Image, mask_L: Image.Image, color=(255,0,
 def draw_boxes_and_labels(img: Image.Image, masks: List[SegMask]) -> Image.Image:
     img = img.convert("RGBA")
     draw = ImageDraw.Draw(img)
-    colors = [
-        (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255),
-        (255,165,0),(0,128,0),(128,0,128),(128,128,0),(0,128,128),(128,0,0),
-    ]
     for i, m in enumerate(masks):
-        color = colors[i % len(colors)]
+        color = tuple(random.randint(0, 255) for _ in range(3))
         draw.rectangle([m.x0, m.y0, m.x1, m.y1], outline=color, width=3)
         text = m.label
-        # バウンディングボックスの横幅の30%をフォントサイズに（下限6, 上限40）
+        # バウンディングボックスの高さの30%をフォントサイズに（下限5, 上限30）
         box_width = max(1, m.x1 - m.x0)
-        font_size = max(6, min(40, int(box_width * 0.3)))
+        font_size = max(5, min(30, int(box_width * 0.3)))
         try:
             font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", size=font_size)
         except Exception:
