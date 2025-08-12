@@ -2,7 +2,6 @@ import json
 from google import genai
 from google.genai import types
 from PIL import Image
-from utils import parse_segmentation_masks
 
 PROMPT_TEMPLATE = """Give the segmentation masks for {desc} in the image.
 Output a JSON list where each item has:
