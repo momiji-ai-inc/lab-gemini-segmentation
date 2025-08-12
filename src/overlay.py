@@ -29,9 +29,10 @@ def draw_boxes_and_labels(img: Image.Image, masks: List[SegMask]) -> Image.Image
         (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255),
         (255,165,0),(0,128,0),(128,0,128),(128,128,0),(0,128,128),(128,0,0),
     ]
+    font_size = max(16, img.height//25)
     try:
-        font = ImageFont.truetype("DejaVuSans.ttf", size=max(16, img.height//25))
-    except:
+        font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", size=font_size)
+    except Exception:
         font = ImageFont.load_default()
     for i, m in enumerate(masks):
         color = colors[i % len(colors)]
