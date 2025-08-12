@@ -31,4 +31,8 @@ def call_gemini(image_path: str, desc: str, model: str, api_key: str) -> list:
         if text.lstrip().startswith("json"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
     data = json.loads(text)
+    
+    # レスポンス結果をjsonとして保存
+    with open(f"outputs/response.json", "w", encoding="utf-8") as f:
+        json.dump(masks, f, ensure_ascii=False, indent=2)
     return data if isinstance(data, list) else []
