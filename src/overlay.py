@@ -29,15 +29,17 @@ def draw_boxes_and_labels(img: Image.Image, masks: List[SegMask]) -> Image.Image
         (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255),
         (255,165,0),(0,128,0),(128,0,128),(128,128,0),(0,128,128),(128,0,0),
     ]
-    font_size = max(16, img.height//25)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", size=font_size)
-    except Exception:
-        font = ImageFont.load_default()
     for i, m in enumerate(masks):
         color = colors[i % len(colors)]
         draw.rectangle([m.x0, m.y0, m.x1, m.y1], outline=color, width=3)
         text = m.label
+        # バウンディングボックスの横幅の30%をフォントサイズに（下限6, 上限40）
+        box_width = max(1, m.x1 - m.x0)
+        font_size = max(6, min(40, int(box_width * 0.3)))
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", size=font_size)
+        except Exception:
+            font = ImageFont.load_default()
         tx, ty = m.x0+4, max(12, m.y0-4)
         stroke = 1
         draw.text((tx, ty), text, font=font, fill=color, stroke_fill=(0,0,0), stroke_width=stroke)
