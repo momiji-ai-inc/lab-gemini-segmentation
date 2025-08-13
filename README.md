@@ -43,3 +43,6 @@ python src/main.py --image ./images/cat.jpg --query cat
 ## 注意点
 - セグメンテーション結果の画像にラベル表記をする際、日本語だと▫️表示になる場合があります。デフォルトはmacOS標準の日本語フォント`/System/Library/Fonts/Hiragino Sans GB.ttc`をロードする設計ですので、文字化けが生じた場合は必要に応じて変更してください。
 - `gemini-2.5-pro`を利用する場合は、`thinking_budget`を0より大きく設定(128~32768)する必要があります。(試した感じ、2.5-flash-liteが良さそう)
+
+※ 参考記事: https://developers.googleblog.com/ja/conversational-image-segmentation-gemini-2-5/
+※ 空間のデモ: https://colab.research.google.com/github/google-gemini/cookbook/blob/main/quickstarts/Spatial_understanding.ipynb
