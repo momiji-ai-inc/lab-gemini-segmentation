@@ -16,6 +16,10 @@ def _as_abs_box(box_2d, W, H) -> Tuple[int, int, int, int]:
 def _decode_mask_to_L(mask_b64_png: str):
     if mask_b64_png.startswith("data:image/png;base64,"):
         mask_b64_png = mask_b64_png.split(",", 1)[1]
+    # base64のパディングを補う
+    missing_padding = len(mask_b64_png) % 4
+    if missing_padding:
+        mask_b64_png += '=' * (4 - missing_padding)
     buf = io.BytesIO(base64.b64decode(mask_b64_png))
 
     img = Image.open(buf)
