@@ -5,49 +5,53 @@ from typing import List, Tuple
 from PIL import Image
 from models import SegMask
 
-def _as_abs_box(box_2d, W, H) -> Tuple[int, int, int, int]:
+def _as_abs_box(box_2d, img_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+    """正規化座標(0-1000)を絶対座標(ピクセル)に変換"""
+    width, height = img_size
     y0, x0, y1, x1 = box_2d
-    ay0 = int(np.floor(y0 / 1000.0 * H))
-    ax0 = int(np.floor(x0 / 1000.0 * W))
-    ay1 = int(np.ceil (y1 / 1000.0 * H))
-    ax1 = int(np.ceil (x1 / 1000.0 * W))
-    return ay0, ax0, ay1, ax1
+    abs_y0 = int(np.floor(y0 / 1000.0 * height))
+    abs_x0 = int(np.floor(x0 / 1000.0 * width))
+    abs_y1 = int(np.ceil(y1 / 1000.0 * height))
+    abs_x1 = int(np.ceil(x1 / 1000.0 * width))
+    return abs_y0, abs_x0, abs_y1, abs_x1
 
 def _decode_mask_to_L(mask_b64_png: str):
+    """base64エンコードされたPNGマスクをグレースケール画像に変換"""
     if mask_b64_png.startswith("data:image/png;base64,"):
         mask_b64_png = mask_b64_png.split(",", 1)[1]
     # base64のパディングを補う
     missing_padding = len(mask_b64_png) % 4
     if missing_padding:
         mask_b64_png += '=' * (4 - missing_padding)
-    buf = io.BytesIO(base64.b64decode(mask_b64_png))
+    buffer = io.BytesIO(base64.b64decode(mask_b64_png))
 
-    img = Image.open(buf)
+    mask_image = Image.open(buffer)
     # パレット画像ならLに変換
-    if img.mode == "P":
-        img = img.convert("L")
-    elif img.mode == "1":
-        img = img.convert("L")
-    return img.convert("L")
+    if mask_image.mode == "P":
+        mask_image = mask_image.convert("L")
+    elif mask_image.mode == "1":
+        mask_image = mask_image.convert("L")
+    return mask_image.convert("L")
 
 
 def parse_segmentation_masks(items: List[dict], img_size: Tuple[int,int]) -> List[SegMask]:
+    """APIレスポンスのJSONからSegMaskオブジェクトのリストを生成"""
     if items is None:
         items = []
-    W, H = img_size
-    out: List[SegMask] = []
-    for idx, it in enumerate(items):
-        if not isinstance(it, dict) or "box_2d" not in it or "mask" not in it:
+    width, height = img_size
+    result: List[SegMask] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict) or "box_2d" not in item or "mask" not in item:
             continue
-        ay0, ax0, ay1, ax1 = _as_abs_box(it["box_2d"], W, H)
-        if not (0 <= ax0 < ax1 <= W and 0 <= ay0 < ay1 <= H):
+        abs_y0, abs_x0, abs_y1, abs_x1 = _as_abs_box(item["box_2d"], img_size)
+        if not (0 <= abs_x0 < abs_x1 <= width and 0 <= abs_y0 < abs_y1 <= height):
             continue
-        m_L = _decode_mask_to_L(it["mask"])
-        if m_L is None:
+        mask_grayscale = _decode_mask_to_L(item["mask"])
+        if mask_grayscale is None:
             continue
-        m = m_L.resize((ax1-ax0, ay1-ay0), Image.Resampling.BICUBIC)
-        full = Image.new("L", (W, H), color=0)
-        full.paste(m, (ax0, ay0))
-        label = (it.get("label") or f"item_{idx}").strip()
-        out.append(SegMask(y0=ay0, x0=ax0, y1=ay1, x1=ax1, label=label, full_mask_L=full))
-    return out
+        resized_mask = mask_grayscale.resize((abs_x1-abs_x0, abs_y1-abs_y0), Image.Resampling.BICUBIC)
+        full_mask = Image.new("L", (width, height), color=0)
+        full_mask.paste(resized_mask, (abs_x0, abs_y0))
+        label = (item.get("label") or f"item_{idx}").strip()
+        result.append(SegMask(y0=abs_y0, x0=abs_x0, y1=abs_y1, x1=abs_x1, label=label, full_mask_L=full_mask))
+    return result

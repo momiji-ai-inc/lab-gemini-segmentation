@@ -11,6 +11,7 @@ Output a JSON list where each item has:
 Use descriptive labels."""
 
 def call_gemini(image_path: str, desc: str, model: str, api_key: str) -> list:
+    """Gemini APIを呼び出してセグメンテーション結果を取得"""
     client = genai.Client(api_key=api_key)
     im = Image.open(image_path).convert("RGB")
     cfg = types.GenerateContentConfig(
